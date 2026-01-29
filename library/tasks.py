@@ -27,7 +27,7 @@ def check_overdue_loans():
     overdue_loans = Loan.objects.select_related('book', 'member__user').filter(is_returned=False, due_date__gt=date.today())
     for overdue_loan in overdue_loans:
         member_email = overdue_loan.member.user.email
-        member_name = overdue_loan.member.user.full_clean()
+        member_name = overdue_loan.member.user.get_full_name()
         book_title = overdue_loan.book.title
 
         send_mail(

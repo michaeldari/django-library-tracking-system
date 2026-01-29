@@ -1,18 +1,24 @@
 from rest_framework import viewsets, status
 from rest_framework.response import Response
 from .models import Author, Book, Member, Loan
-from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer
+from .serializers import AuthorSerializer, BookSerializer, MemberSerializer, LoanSerializer, AdditionalDaysSerializer
 from rest_framework.decorators import action
 from django.utils import timezone
 from .tasks import send_loan_notification
+from datetime import date, timedelta
+from django.db.models import Count, Q
 
 class AuthorViewSet(viewsets.ModelViewSet):
     queryset = Author.objects.all()
     serializer_class = AuthorSerializer
 
 class BookViewSet(viewsets.ModelViewSet):
-    queryset = Book.objects.all()
+    queryset = Book.objects.select_related('author').all()
     serializer_class = BookSerializer
+
+    def list(self, request, *args, **kwargs):
+        book_qs = Book.objects.select_related('author').all()
+        return Response(self.serializer(book_qs, many=True).data)
 
     @action(detail=True, methods=['post'])
     def loan(self, request, pk=None):
@@ -49,6 +55,39 @@ class MemberViewSet(viewsets.ModelViewSet):
     queryset = Member.objects.all()
     serializer_class = MemberSerializer
 
+    @action(detail=False, methods=['GET'])
+    def top_active(self, request):
+        active_loans_qs = Loan.objects.select_related('member').annotate(
+            total_active_loans = Count('loan', Q(is_returned = False))
+        ).order_by('-total_active_loans')[:5]
+
+        details_to_return = []
+        for active_loan in active_loans_qs:
+            details_to_return.append({
+                'id': active_loan.member.id,
+                'username': active_loan.member.user.get_full_name(),
+                'active_loan': active_loan.total_active_loans
+            })
+        return Response(details_to_return, status=status.HTTP_200_OK)
+
+
 class LoanViewSet(viewsets.ModelViewSet):
     queryset = Loan.objects.all()
     serializer_class = LoanSerializer
+
+    @action(detail=True, methods=['post'])
+    def extend_due_date(self, request, pk=None):
+        additional_days = AdditionalDaysSerializer(request.data)
+        if not additional_days.is_valid():
+            return Response({'error': 'Invalid  additional days.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        loan = self.get_object()
+
+        if loan.due_date < date.today():
+            return Response({'error': 'Your loan is not due to return nor extend.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        new_days = additional_days.validate_data('additional_days')
+        loan.due_date += timedelta(days=int(new_days))
+        loan.save()
+
+        return Response({'data': additional_days.data}, status=status.HTTP_200_OK)
